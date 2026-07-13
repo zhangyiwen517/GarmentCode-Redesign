@@ -61,20 +61,7 @@ class GUIState:
         # Pattern
         self.pattern_state = GUIPattern()
 
-        # Pattern display constants
-        self.canvas_aspect_ratio = 1500. / 900   # Millimiter paper
-        self.w_rel_body_size = 0.5  # Body size as fraction of horisontal canvas axis
-        self.h_rel_body_size = 0.95
-        self.background_body_scale = 1 / 171.99   # Inverse of the mean_all body height from GGG
-        self.background_body_canvas_center = 0.273  # Fraction of the canvas (millimiter paper)
-        self.w_canvas_pad, self.h_canvas_pad = 0.011, 0.04
-        self.body_outline_classes = ''   # Application of pattern&body scaling when it overflows
-
         # Paths setup
-        # Static images for GUI
-        self.path_static_img = '/img'
-        app.add_static_files(self.path_static_img, './assets/img')
-        
         # 3D updates
         self.path_static_3d = '/geo'
         self.garm_3d_filename = f'garm_3d_{self.pattern_state.id}.glb'
@@ -112,6 +99,87 @@ class GUIState:
             info=theme_colors.info,
             warning=theme_colors.warning
         )
+        ui.add_css('''
+            .gc-main-splitter > .q-splitter__separator {
+                transition: background-color 0.2s ease;
+            }
+
+            .gc-pattern-image {
+                min-width: 0;
+                min-height: 0;
+            }
+
+            @media (max-width: 767px) {
+                body {
+                    overflow-x: hidden;
+                }
+
+                .gc-main-splitter.q-splitter--vertical {
+                    flex-direction: column !important;
+                    height: auto !important;
+                    overflow: visible;
+                }
+
+                .gc-main-splitter.q-splitter--vertical > .q-splitter__before {
+                    flex: none !important;
+                    width: 100% !important;
+                    height: 60dvh !important;
+                    min-height: 28rem;
+                    overflow: hidden;
+                }
+
+                .gc-main-splitter.q-splitter--vertical > .q-splitter__after {
+                    flex: none !important;
+                    width: 100% !important;
+                    height: 70dvh !important;
+                    min-height: 32rem;
+                    overflow: hidden;
+                }
+
+                .gc-main-splitter.q-splitter--vertical > .q-splitter__separator {
+                    display: none;
+                }
+
+                .gc-header {
+                    height: auto !important;
+                    min-height: 3.5rem;
+                    padding: 0.5rem 0.75rem !important;
+                }
+
+                .gc-header-title {
+                    font-size: 1.1rem !important;
+                    line-height: 1.25rem;
+                    white-space: normal;
+                }
+
+                .gc-desktop-nav {
+                    display: none !important;
+                }
+
+                .gc-footer {
+                    min-height: 2.25rem;
+                    font-size: 0.75rem;
+                    text-align: center;
+                }
+
+                .gc-scene-controls {
+                    justify-content: center;
+                    gap: 0.25rem;
+                    padding: 0.25rem;
+                }
+
+                .gc-status {
+                    font-size: 0.7rem;
+                    line-height: 1rem;
+                    text-align: center;
+                }
+
+                .gc-download {
+                    width: calc(100% - 1rem);
+                    margin: 0.25rem 0.5rem;
+                }
+            }
+        ''')
 
     # SECTION Top level layout        
     def layout(self):
@@ -120,8 +188,7 @@ class GUIState:
         # as % of viewport width/height
         self.h_header = 5
         self.h_params_content = 88
-        self.h_garment_display = 74 
-        self.w_garment_display = 65
+        self.w_splitter_main = 30
         self.w_splitter_design = 32
         self.scene_base_resoltion = (1024, 800)
 
@@ -132,31 +199,43 @@ class GUIState:
         self.def_body_file_dialog()
 
         # Configurator GUI
-        with ui.row(wrap=False).classes(f'w-full h-[{self.h_params_content}dvh] p-0 m-0 '): 
-            # Tabs
-            self.def_param_tabs_layout()
-            
-            # Pattern visual
-            self.view_tabs_layout()
+        with ui.splitter(value=self.w_splitter_main, limits=(20, 55)).props(
+            'separator-class="bg-primary"'
+        ).classes(f'gc-main-splitter w-full h-[{self.h_params_content}dvh] p-0 m-0') as splitter:
+            with splitter.before:
+                self.def_param_tabs_layout()
+
+            with splitter.after:
+                self.view_tabs_layout()
 
         # Overall wrapping
         # NOTE: https://nicegui.io/documentation/section_pages_routing#page_layout
-        with ui.header(elevated=True, fixed=False).classes(f'h-[{self.h_header}vh] items-center justify-end py-0 px-4 m-0'):
-            ui.label('GarmentCode design configurator').classes('mr-auto').style('font-size: 150%; font-weight: 400')
+        with ui.header(elevated=True, fixed=False).classes(
+            f'gc-header h-[{self.h_header}vh] items-center justify-end py-0 px-4 m-0'
+        ):
+            ui.label('GarmentCode design configurator').classes(
+                'gc-header-title mr-auto'
+            ).style('font-size: 150%; font-weight: 400')
             ui.button(
                 'About the project', 
                 on_click=lambda: ui.navigate.to('https://igl.ethz.ch/projects/garmentcode/', new_tab=True)
-                ).props('flat color=white')
-            with ui.link(target='https://arxiv.org/abs/2306.03642', new_tab=True):
+                ).props('flat color=white').classes('gc-desktop-nav')
+            with ui.link(
+                target='https://arxiv.org/abs/2306.03642', new_tab=True
+            ).classes('gc-desktop-nav'):
                 ui.html(icon_arxiv).classes('w-16 bg-transparent')
             ui.button(
                 'Dataset', 
                 on_click=lambda: ui.navigate.to('https://igl.ethz.ch/projects/GarmentCodeData/', new_tab=True)
-                ).props('flat color=white')
-            with ui.link(target='https://github.com/maria-korosteleva/GarmentCode', new_tab=True):
+                ).props('flat color=white').classes('gc-desktop-nav')
+            with ui.link(
+                target='https://github.com/maria-korosteleva/GarmentCode', new_tab=True
+            ).classes('gc-desktop-nav'):
                 ui.html(icon_github).classes('w-8 bg-transparent')
         # NOTE No ui.left_drawer(), no ui.right_drawer()
-        with ui.footer(fixed=False, elevated=True).classes('items-center justify-center p-0 m-0'): 
+        with ui.footer(fixed=False, elevated=True).classes(
+            'gc-footer items-center justify-center p-0 m-0'
+        ):
             # https://www.termsfeed.com/blog/sample-copyright-notices/
             ui.link(
                 '© 2024 Interactive Geometry Lab', 
@@ -166,27 +245,33 @@ class GUIState:
 
     def view_tabs_layout(self):
         """2D/3D view tabs"""
-        with ui.column(wrap=False).classes(f'h-[{self.h_params_content}vh] w-full items-center'):
-            with ui.tabs() as tabs: 
+        with ui.column(wrap=False).classes('w-full h-full min-w-0 min-h-0 items-center'):
+            with ui.tabs().classes('shrink-0') as tabs:
                 self.ui_2d_tab = ui.tab('Sewing Pattern')
                 self.ui_3d_tab = ui.tab('3D view')
-            with ui.tab_panels(tabs, value=self.ui_2d_tab, animated=True).classes('w-full h-full items-center'):  
+            with ui.tab_panels(tabs, value=self.ui_2d_tab, animated=True).classes(
+                'w-full flex-1 min-h-0 items-center'
+            ):
                 with ui.tab_panel(self.ui_2d_tab).classes('w-full h-full items-center justify-center p-0 m-0'):
                     self.def_pattern_display()
                 with ui.tab_panel(self.ui_3d_tab).classes('w-full h-full items-center p-0 m-0'):
                     self.def_3d_scene()
 
-            ui.button('Download Current Garment', on_click=lambda: self.state_download()).classes('justify-self-end')
+            ui.button(
+                'Download Current Garment', on_click=lambda: self.state_download()
+            ).classes('gc-download shrink-0 justify-self-end')
 
     # !SECTION
     # SECTION -- Parameter menu
     def def_param_tabs_layout(self):
         """Layout of tabs with parameters"""
-        with ui.column(wrap=False).classes(f'h-[{self.h_params_content}vh]'):
-            with ui.tabs() as tabs:
+        with ui.column(wrap=False).classes('w-full h-full min-w-0 min-h-0'):
+            with ui.tabs().classes('shrink-0') as tabs:
                 self.ui_design_tab = ui.tab('Design parameters')
                 self.ui_body_tab = ui.tab('Body parameters')
-            with ui.tab_panels(tabs, value=self.ui_design_tab, animated=True).classes('w-full h-full items-center'):  
+            with ui.tab_panels(tabs, value=self.ui_design_tab, animated=True).classes(
+                'w-full flex-1 min-h-0 items-center'
+            ):
                 with ui.tab_panel(self.ui_design_tab).classes('w-full h-full items-center p-0 m-0'):
                     self.def_design_tab()
                 with ui.tab_panel(self.ui_body_tab).classes('w-full h-full items-center p-0 m-0'):
@@ -325,33 +410,20 @@ class GUIState:
     # SECTION -- Pattern visuals
     def def_pattern_display(self):
         """Prepare pattern display area"""
-        with ui.column().classes('h-full p-0 m-0'):
-            with ui.row().classes('w-full p-0 m-0 justify-between'):
-                switch = ui.switch(
-                    'Body Silhouette', value=True, 
-                ).props('dense left-label').classes('text-stone-800')
-
+        with ui.column(wrap=False).classes('w-full h-full min-h-0 p-2 m-0'):
+            with ui.row().classes('w-full shrink-0 p-0 m-0 justify-end'):
                 self.ui_self_intersect = ui.label(
                     'WARNING: Garment panels are self-intersecting!'
-                ).classes('font-semibold text-purple-600 border-purple-600 border py-0 px-1.5 rounded-md') \
+                ).classes(
+                    'gc-status font-semibold text-purple-600 border-purple-600 '
+                    'border py-0 px-1.5 rounded-md'
+                ) \
                 .bind_visibility(self.pattern_state, 'is_self_intersecting')
 
-            with ui.image(
-                    f'{self.path_static_img}/millimiter_paper_1500_900.png'
-                ).classes(f'aspect-[{self.canvas_aspect_ratio}] h-[95%] p-0 m-0')  as self.ui_pattern_bg:  
-                # NOTE: Positioning: https://github.com/zauberzeug/nicegui/discussions/957 
-                with ui.row().classes('w-full h-full p-0 m-0 bg-transparent relative top-[0%] left-[0%]'):
-                    self.body_outline_classes = 'bg-transparent h-full absolute top-[0%] left-[0%] p-0 m-0'
-                    self.ui_body_outline = ui.image(f'{self.path_static_img}/ggg_outline_mean_all.svg') \
-                        .classes(self.body_outline_classes) 
-                    switch.bind_value(self.ui_body_outline, 'visible')
-                
-                # NOTE: ui.row allows for correct classes application (e.g. no padding on svg pattern)
-                with ui.row().classes('w-full h-full p-0 m-0 bg-transparent relative'):
-                    # Automatically updates from source
-                    self.ui_pattern_display = ui.interactive_image(
-                        ''
-                    ).classes('bg-transparent p-0 m-0')                    
+            source = str(self.pattern_state.svg_path()) if self.pattern_state.svg_filename else ''
+            self.ui_pattern_display = ui.image(source).props('fit=contain').classes(
+                'gc-pattern-image w-full flex-1 bg-white p-0 m-0'
+            )
 
     # !SECTION
     # SECTION 3D view
@@ -400,7 +472,9 @@ class GUIState:
         def body_visibility(value):
             self.ui_body_3d.visible(value)
 
-        with ui.row().classes('w-full p-0 m-0 justify-between items-center'):
+        with ui.row().classes(
+            'gc-scene-controls w-full shrink-0 p-0 m-0 justify-between items-center'
+        ):
             self.ui_body_3d_switch = ui.switch(
                 'Body Silhouette', 
                 value=True, 
@@ -411,8 +485,10 @@ class GUIState:
 
             ui.label(
                 'INFO: it takes a few minutes'
-            ).classes(f'font-semibold text-[{theme_colors.primary}] border-[{theme_colors.primary}] '
-                    'border py-0 px-1.5 rounded-md')
+            ).classes(
+                f'gc-status font-semibold text-[{theme_colors.primary}] '
+                f'border-[{theme_colors.primary}] border py-0 px-1.5 rounded-md'
+            )
 
         camera = self.create_camera(camera_location, y_fov)
         with ui.scene(
@@ -421,7 +497,7 @@ class GUIState:
             camera=camera, 
             grid=False, 
             background_color=bg_color   
-            ).classes(f'w-[{self.w_garment_display}vw] h-[90%] p-0 m-0') as self.ui_3d_scene:
+            ).classes('w-full flex-1 min-w-0 min-h-0 p-0 m-0') as self.ui_3d_scene:
             # Lights setup
             self.create_lights(self.ui_3d_scene, intensity=60.)
             # NOTE: texture is there, just needs a better setup
@@ -558,75 +634,10 @@ class GUIState:
         # NOTE This is the slow part 
         self.pattern_state.reload_garment()
 
-        # TODOLOW the pattern is floating around when collars are added.. 
         # Update display
         if self.ui_pattern_display is not None:
-
-            if self.pattern_state.svg_filename:
-                # Re-align the canvas and body with the new pattern
-                p_bbox_size = self.pattern_state.svg_bbox_size
-                p_bbox = self.pattern_state.svg_bbox
-
-                # Margin calculations w.r.t. canvas size
-                # s.t. the pattern scales correctly
-                w_shift = abs(p_bbox[0])  # Body feet location in width direction w.r.t top-left corner of the pattern
-                m_top = (1. - abs(p_bbox[2]) * self.background_body_scale) * self.h_rel_body_size + (1. - self.h_rel_body_size) / 2 
-                m_left = self.background_body_canvas_center - w_shift * self.background_body_scale * self.w_rel_body_size
-                m_right = 1 - m_left - p_bbox_size[0] * self.background_body_scale * self.w_rel_body_size
-                m_bottom = 1 - m_top - p_bbox_size[1] * self.background_body_scale * self.h_rel_body_size
-
-                # Canvas padding adjustment
-                m_top -= self.h_canvas_pad
-                m_left -= self.w_canvas_pad
-                m_right += self.w_canvas_pad  # preserve evaluated width
-                m_bottom -= self.h_canvas_pad
-
-                # New placement
-                if m_top < 0 or m_bottom < 0 or m_left < 0 or m_right < 0:
-                    # Calculate the fraction
-                    scale_margin = 1.2
-                    y_top_scale = abs(min(m_top * scale_margin, 0.)) + 1.
-                    y_bot_scale = 1. + abs(min(m_bottom * scale_margin, 0.))
-                    x_left_scale = abs(min(m_left * scale_margin, 0.)) + 1.
-                    x_right_scale = abs(min(m_right * scale_margin, 0.)) + 1.
-                    scale = min(1. / y_top_scale, 1. / y_bot_scale, 1. / x_left_scale, 1. / x_right_scale)
-
-                    # Rescale the body
-                    self.ui_body_outline.classes(
-                        replace=self.body_outline_classes + f' origin-center scale-[{scale}]'
-                    )
-
-                    # Recalculate positioning & width
-                    body_center = 0.5 - self.background_body_canvas_center
-                    m_top = (1. - abs(p_bbox[2]) * self.background_body_scale) * self.h_rel_body_size * scale + (1. - self.h_rel_body_size * scale) / 2 
-                    m_left = (0.5 - body_center * scale) - w_shift * self.background_body_scale * self.w_rel_body_size * scale
-                    m_right = 1 - m_left - p_bbox_size[0] * self.background_body_scale * self.w_rel_body_size * scale
-
-                    # Canvas padding adjustment
-                    # TODOLOW For some reason top adjustment is not needed here: m_top -= self.h_canvas_pad * scale
-                    m_left -= self.w_canvas_pad * scale
-                    m_right += self.w_canvas_pad * scale
-
-                else:  # Display normally 
-                    # Remove body transforms if any were applied
-                    self.ui_body_outline.classes(replace=self.body_outline_classes)
-
-                # New pattern image
-                self.ui_pattern_display.set_source(
-                    str(self.pattern_state.svg_path()) if self.pattern_state.svg_filename else '')
-                self.ui_pattern_display.classes(
-                        replace=f"""bg-transparent p-0 m-0
-                                absolute 
-                                left-[{m_left * 100}%]
-                                top-[{m_top * 100}%] 
-                                w-[{(1. - m_right - m_left) * 100}%]
-                                height-auto
-                        """)  
-                    
-            else:
-                # Restore default state
-                self.ui_pattern_display.set_source('')
-                self.ui_body_outline.classes(replace=self.body_outline_classes)
+            source = str(self.pattern_state.svg_path()) if self.pattern_state.svg_filename else ''
+            self.ui_pattern_display.set_source(source)
 
     def update_design_params_ui_state(self, ui_elems, design_params):
         """Sync ui params with the current state of the design params"""

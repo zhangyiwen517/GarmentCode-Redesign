@@ -1,3 +1,10 @@
+import os
+
+os.environ.setdefault('MPLBACKEND', 'Agg')
+
+import matplotlib
+matplotlib.use('Agg', force=True)
+
 from nicegui import ui, Client
 
 # Custom
