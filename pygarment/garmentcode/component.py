@@ -107,7 +107,18 @@ class Component(BaseComponent):
             # of stitches
             spattern.pattern['stitches'] += sub_raw['stitches']
 
+            # of surface stitches
+            if 'surface_stitches' in sub_raw:
+                spattern.pattern.setdefault('surface_stitches', [])
+                spattern.pattern['surface_stitches'] += sub_raw['surface_stitches']
+
         spattern.pattern['stitches'] += self.stitching_rules.assembly()
+
+        # Also merge surface_stitches defined directly on this component
+        if self.surface_stitches:
+            spattern.pattern.setdefault('surface_stitches', [])
+            spattern.pattern['surface_stitches'] += self.surface_stitches
+
         return spattern   
 
     def bbox3D(self):
@@ -144,4 +155,3 @@ class Component(BaseComponent):
         return list(set([att
                          for att in all_attrs
                          if isinstance(att, BaseComponent)] + self.subs))
-

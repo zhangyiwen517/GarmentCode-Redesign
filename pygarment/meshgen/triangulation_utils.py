@@ -290,6 +290,12 @@ def get_keep_vertices(cdt, len_b):
         * keep_vertices: vertices of cdt without newly inserted boundary points
     """
     faces, points = get_faces_sorted(cdt)
+    
+    # Handle empty or malformed faces case
+    if len(faces) == 0 or faces.ndim != 2:
+        print(f'WARNING: get_keep_vertices received invalid faces (len={len(faces)}, ndim={faces.ndim if hasattr(faces, "ndim") else "N/A"}). Returning all {len_b} boundary points.')
+        return points[:len_b] if len(points) >= len_b else points
+    
     edges = np.concatenate([faces[:, :2], faces[:, 1:], faces[:, ::2]])
     unique_edges, counts = np.unique(np.array(edges), axis=0, return_counts=True)
     unique_occurring_edges = unique_edges[counts == 1]

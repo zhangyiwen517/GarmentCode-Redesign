@@ -149,7 +149,7 @@ class Panel(BaseComponent):
     
     def translate_to(self, new_translation):
         """Set panel translation to be exactly that vector"""
-        self.translation = np.asarray(new_translation)
+        self.translation = np.asarray(new_translation).flatten()
         self.autonorm()
         return self
     
@@ -228,6 +228,12 @@ class Panel(BaseComponent):
             curr_euler[2] *= -1  
             self.rotate_to(R.from_euler('XYZ', curr_euler))  
 
+            # Mirror surface stitch target segment coordinates
+            for ss in self.surface_stitches:
+                if 'target' in ss and 'segment' in ss['target']:
+                    seg = ss['target']['segment']
+                    ss['target']['segment'] = [[-pt[0], pt[1]] for pt in seg]
+
             # Fix right/wrong side
             self.autonorm()
         else:
@@ -273,8 +279,13 @@ class Panel(BaseComponent):
         # FIXME Some panels have weird resulting alignemnt when th
         # is pivot setup is removed -- there is a bug somewhere
 
+        # Capture pre-pivot edges for surface-stitch segment coordinate transform
+        pivot_pt = self.edges[0].start
+        pdx = float(pivot_pt[0])
+        pdy = float(pivot_pt[1])
+
         # always start from zero for consistency between panels
-        self.set_pivot(self.edges[0].start, replicate_placement=True)
+        self.set_pivot(pivot_pt, replicate_placement=True)
 
         # Basics
         panel = Namespace(
@@ -282,6 +293,11 @@ class Panel(BaseComponent):
             rotation=self.rotation.as_euler('XYZ', degrees=True).tolist(), 
             vertices=[self.edges[0].start], 
             edges=[])
+
+        # Store original pivot so surface-stitch target segments can be
+        # transformed from pre-pivot to post-pivot coordinates at mesh
+        # generation time (see boxmeshgen.py _surface_stitch_pairs).
+        panel._orig_pivot = [pdx, pdy]
 
         for i in range(len(self.edges)):
             vertices, edge = self.edges[i].assembly()
@@ -317,6 +333,25 @@ class Panel(BaseComponent):
 
         # Assembly stitching info (panel might have inner stitches)
         spattern.pattern['stitches'] = self.stitching_rules.assembly()
+
+        # Surface stitches (e.g. patch pocket attachments)
+        if self.surface_stitches:
+            # Transform source segment from pre-pivot to post-pivot space
+            # (source edges belong to this panel, so use this panel's pivot).
+            # Target segments are NOT transformed here -- they refer to
+            # another panel's local coordinates and will be transformed at
+            # mesh-generation time using the target panel's _orig_pivot.
+            transformed = []
+            for ss in self.surface_stitches:
+                ss_copy = dict(ss)
+                if 'source' in ss_copy and 'segment' in ss_copy['source']:
+                    seg = ss_copy['source']['segment']
+                    new_seg = [[pt[0] - pdx, pt[1] - pdy] for pt in seg]
+                    ss_copy = dict(ss_copy)
+                    ss_copy['source'] = dict(ss_copy['source'])
+                    ss_copy['source']['segment'] = new_seg
+                transformed.append(ss_copy)
+            spattern.pattern['surface_stitches'] = transformed
 
         return spattern
 

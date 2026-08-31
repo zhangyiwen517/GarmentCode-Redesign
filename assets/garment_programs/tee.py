@@ -45,7 +45,8 @@ class TorsoFrontHalfPanel(BaseBodicePanel):
             [0, length + shoulder_incl], 
             loop=True
         )
-
+        print("----------------------------------------------->")
+        print(self.edges)
         # Interfaces
         self.interfaces = {
             'outside':  pyg.Interface(self, self.edges[1]),   

@@ -1,0 +1,540 @@
+from copy import deepcopy
+import numpy as np
+
+import pygarment as pyg
+from assets.garment_programs.base_classes import BaseBottoms
+from assets.garment_programs import bands
+
+
+class PantPanel(pyg.Panel):
+    def __init__(
+            self, name, body, design, 
+            length,
+            waist, 
+            hips,
+            hips_depth,
+            crotch_width,
+            dart_position,
+            match_top_int_to=None,
+            hipline_ext=1,
+            double_dart=False, 
+            is_front=False,           # zyw新增：是否为前片
+            front_drop=0.0,            # zyw新增：前腰下降量 (cm)
+            side_seam_tilt_angle=-5.0  # zyw新增：后片侧缝倾斜角度 (度)
+    ) -> None:  
+            
+        """
+            Basic pant panel with option to be fitted (with darts)
+        """
+        super().__init__(name)
+
+        flare = body['leg_circ'] * (design['flare']['v']  - 1) / 4 
+        hips_depth = hips_depth * hipline_ext
+        # ---- zyw新增：读取工业修正参数 ----
+        back_raise = design.get('back_raise', {}).get('v', 2.0) # 后腰起翘 (cm)
+        back_inclination_deg = design.get('back_inclination', {}).get('v', 10) # 后裆困势 (度)
+        back_inclination_rad = np.deg2rad(back_inclination_deg)
+        back_waist_trans = design.get('back_waist_trans', {}).get('v', 0.0)
+        waist_trans = back_waist_trans if not is_front else 0.0
+
+        hip_side_incl = np.deg2rad(body['_hip_inclination'])
+        dart_depth = hips_depth * 0.8 
+        
+        # Crotch cotrols
+        crotch_depth_diff =  body['crotch_hip_diff']
+        crotch_extention = crotch_width
+
+        # eval pants shape
+        # TODO Return ruffle opportunity?
+
+        # amount of extra fabric at waist
+        w_diff = hips - waist   # Assume its positive since waist is smaller then hips
+        # We distribute w_diff among the side angle and a dart 
+        hw_shift = np.tan(hip_side_incl) * hips_depth
+        # Small difference
+        if hw_shift > w_diff:
+            hw_shift = w_diff
+
+        # --- Edges definition ---
+        # Right
+        if pyg.utils.close_enough(design['flare']['v'], 1):  # skip optimization
+            right_bottom = pyg.Edge(    
+                [-flare, 0], 
+                [0, length]
+            )
+        else:
+            right_bottom = pyg.CurveEdgeFactory.curve_from_tangents(
+                [-flare, 0], 
+                [0, length],
+                target_tan1=np.array([0, 1]), 
+                # initial guess places control point closer to the hips 
+                initial_guess=[0.75, 0]
+            )
+        
+        # ---- 工业制版标准：后片结构 ----
+        # 后片整体向外偏移量
+        back_panel_outward_shift = 2.5 if not is_front else 0.0
+        
+        # 定义臀围线位置（Y坐标）
+        hip_line_y = length  # 臀围线在length位置
+        
+        # 定义臀围线上的关键点
+        # point1: 臀围线上的侧缝点
+        point1 = [hw_shift + back_panel_outward_shift, hip_line_y]
+        # point2: 臀围线上的中缝点（后裆宽位置）
+        point2 = [hips, hip_line_y]
+        
+        # 计算侧缝倾斜偏移量（仅后片生效）
+        side_seam_offset = 0.0
+        if not is_front:
+            tilt_rad = np.deg2rad(side_seam_tilt_angle)
+            side_seam_offset = np.tan(tilt_rad) * hips_depth
+
+        # 侧腰点（应用倾斜后）
+        # 后片腰线整体向侧缝方向（外侧，X负方向）平移3，side_waist也跟随移动
+        waistline_shift = -3.0 if not is_front else 0.0
+        raw_side_waist = np.array([hw_shift + back_panel_outward_shift + waistline_shift, length + hips_depth])
+        side_waist = (raw_side_waist + np.array([side_seam_offset, 0.0])).tolist()
+
+        # ---- 后片侧缝：删除贝塞尔曲线，改为平滑曲线 ----
+        # 侧缝从中裆线与侧缝交点(point3)起，向point1倾斜15度，point1再与腰线侧缝点连接
+        if not is_front:
+            # 中裆线位置（约在裤长的50-60%处）
+            knee_line_y = length * 0.55
+            
+            # point3: 中裆线与侧缝线的交点
+            # 侧缝线从裤脚 [-flare, 0] 到 point1 [back_panel_outward_shift, length]
+            # 在 knee_line_y 处的X坐标按线性插值
+            t = knee_line_y / length
+            point3_x = -flare * (1 - t) + back_panel_outward_shift * t
+            point3 = [point3_x, knee_line_y]
+            
+            # 从point3到point1的倾斜（向内倾斜15度）
+            # 倾斜15度意味着相对于原方向向内偏移（X坐标减小）
+            tilt_15_rad = np.deg2rad(15)
+            # 原始方向是从point3到point1
+            original_dx = point1[0] - point3[0]
+            original_dy = point1[1] - point3[1]
+            # 向内倾斜15度：在X方向减小偏移（负方向）
+            offset_x = np.tan(tilt_15_rad) * abs(original_dy)
+            point1_adjusted = [point1[0] - offset_x, point1[1]]
+            
+            # 创建侧缝曲线：从point3开始，经过point1_adjusted，到达腰线
+            # 使用 curve_3_points，控制点在point1_adjusted附近
+            start_pt = point3
+            end_pt = side_waist
+            
+            # 控制点：在point1_adjusted位置，实现向内倾斜效果
+            control_point = point1_adjusted
+            
+            # 创建平滑曲线
+            right_top = pyg.CurveEdgeFactory.curve_3_points(
+                start_pt, end_pt, control_point
+            )
+            
+            # right_bottom 只延伸到 point3，确保顺滑连接
+            # 计算 right_top 在 point3 处的切线方向（从 point3 指向 control_point）
+            tan_at_point3 = np.array([control_point[0] - point3[0], control_point[1] - point3[1]])
+            tan_at_point3 = tan_at_point3 / np.linalg.norm(tan_at_point3)
+            
+            if pyg.utils.close_enough(design['flare']['v'], 1):  # skip optimization
+                right_bottom = pyg.Edge(    
+                    [-flare, 0], 
+                    point3
+                )
+            else:
+                right_bottom = pyg.CurveEdgeFactory.curve_from_tangents(
+                    [-flare, 0], 
+                    point3,
+                    target_tan1=tan_at_point3,  # 使用 right_top 的起点切线方向
+                    # initial guess places control point closer to the hips 
+                    initial_guess=[0.75, 0]
+                )
+            right_bottom_combined = right_bottom
+        else:
+            # 前片：直线侧缝
+            start_pt = right_bottom.end
+            right_top = pyg.Edge(start_pt, side_waist)
+            right_bottom_combined = right_bottom
+
+        # ---- 腰线（前后片凹陷弧线） ----
+        # 后片腰线整体向侧缝方向（外侧，X负方向）平移3，实现后裆倾斜角效果
+        waistline_shift = -3.0 if not is_front else 0.0
+        
+        top_start = [side_waist[0] + waist_trans + waistline_shift, side_waist[1]]
+        
+        # 重新定义 right_top 的终点为 top_start，确保侧缝与腰线连接
+        if not is_front:
+            # 后片：侧缝曲线终点改为 top_start
+            right_top = pyg.CurveEdgeFactory.curve_3_points(
+                point3, top_start, point1_adjusted
+            )
+        else:
+            # 前片：直线侧缝
+            right_top = pyg.Edge(right_bottom.end, top_start)
+
+        if is_front:
+            top_end_y = length + hips_depth - front_drop
+        else:
+            top_end_y = length + hips_depth + back_raise
+
+        # ---- 后片：后裆线（整条曲线，上半段微弯+下半段反J型）+ 垂直腰线 ----
+        if not is_front:
+            # 定义后裆倾斜角
+            back_rise_tilt_deg = 15
+            back_rise_tilt_rad = np.deg2rad(back_rise_tilt_deg)
+            
+            # 后裆线起点：先定义一个临时位置（上端伸长0.1）
+            crotch_start_x = point2[0] + waistline_shift
+            crotch_start_y = top_end_y + 1.2  # 从1改为1.2，伸长0.2
+            
+            # 腰线：保持原始后中上翘形态，并在后中点处缩短0.15
+            # 腰线终点：从临时位置往侧缝方向（X负方向）移动0.15
+            top_end = [crotch_start_x - 0.15, crotch_start_y]
+            
+            # 重新计算腰线控制点，保持原始后中上翘形态
+            mid_x = (top_start[0] + top_end[0]) / 2
+            mid_y = (top_start[1] + top_end[1]) / 2
+            sag = back_raise * 0.5
+            
+            cp1_waist = [top_start[0] * 0.6 + top_end[0] * 0.4, mid_y - sag]
+            # 原始上翘计算：cp2在终点右侧和上方
+            cp2_waist = [top_end[0] + 1.5, top_end[1] + back_raise]
+            
+            top = pyg.CurveEdge(top_start, top_end, [cp1_waist, cp2_waist], relative=False)
+            
+            # 后裆线起点：与腰线终点重合（确保衔接）
+            crotch_start = list(top_end)
+            crotch_end = [hips + crotch_extention, length - crotch_depth_diff]
+            
+            # 后裆线：整条曲线，上半段近似直线，下半段反J型（更凹）
+            crotch_len = np.linalg.norm(np.array(crotch_end) - np.array(crotch_start))
+            
+            # 控制点1：非常接近起点，使上半段近似直线（弯曲度极小）
+            cp1_distance = crotch_len * 0.02  # 距离更短，几乎完全直线
+            cp1_x = crotch_start[0] - np.sin(back_rise_tilt_rad) * cp1_distance
+            cp1_y = crotch_start[1] - np.cos(back_rise_tilt_rad) * cp1_distance
+            cp1 = [cp1_x, cp1_y]
+            
+            # 控制点2：向内拉更多，形成更凹的反J字形弯曲（下半段）
+            cp2_distance = crotch_len * 0.6  # 增加距离
+            cp2_x = crotch_end[0] - cp2_distance * 0.4  # 向内更多（X负方向）
+            cp2_y = crotch_end[1] - cp2_distance * 0.25  # 向下更多，弯曲程度更大
+            cp2 = [cp2_x, cp2_y]
+            
+            crotch_curve = pyg.CurveEdge(crotch_start, crotch_end, [cp1, cp2], relative=False)
+        else:
+            # 前片：恢复备份文件的简单形态
+            top_end = [w_diff + waist, top_end_y]
+
+            # 计算连线中点
+            mid_x = (top_start[0] + top_end[0]) / 2
+            mid_y = (top_start[1] + top_end[1]) / 2
+            
+            # 凹陷深度
+            sag = front_drop * 1.2
+            
+            cp1 = [top_start[0] * 0.6 + top_end[0] * 0.4, mid_y - sag]
+            cp2 = [top_start[0] * 0.4 + top_end[0] * 0.6, mid_y - sag]
+            
+            top = pyg.CurveEdge(top_start, top_end, [cp1, cp2], relative=False)
+            
+            # 前片裆部曲线：备份文件的简单形态
+            crotch_top = pyg.Edge(
+                top.end, 
+                [hips, length + 0.45 * hips_depth]
+            )
+            crotch_bottom = pyg.CurveEdgeFactory.curve_from_tangents(
+                crotch_top.end,
+                [hips + crotch_extention, length - crotch_depth_diff],
+                target_tan0=np.array([0, -1]),
+                target_tan1=np.array([1, 0]),
+                initial_guess=[0.5, -0.5]
+            )
+            crotch_curve = pyg.EdgeSequence(crotch_top, crotch_bottom)
+
+        # 获取裆部曲线的终点
+        crotch_end_pt = crotch_curve.end if hasattr(crotch_curve, 'end') else crotch_curve[-1].end
+        
+        left = pyg.CurveEdgeFactory.curve_from_tangents(
+            crotch_end_pt,
+            [
+                crotch_end_pt[0] - 2 + flare,
+                y := min(0, length - crotch_depth_diff * 1.5)
+            ],
+            target_tan1=[flare, y - crotch_end_pt[1]],
+            initial_guess=[0.3, 0]
+        )
+
+        self.edges = pyg.EdgeSequence(
+            right_bottom_combined, right_top, top, crotch_curve, left
+        ).close_loop()
+        bottom = self.edges[-1]
+
+        # ---- 定义 point1：后片侧缝总长的 1/4 处（从侧腰点向下） ----
+        self.point1 = None
+        # if not is_front:
+        #     # 计算侧缝总长度（right_bottom + right_top）
+        #     side_total_length = right_bottom.length() + right_top.length()
+        #     target_length = side_total_length * 0.2  # 1/4
+        #     if target_length <= right_top.length():
+        #         # 在 right_top 上，从侧腰（终点）往回走
+        #         t = 1.0 - target_length / right_top.length()
+        #         self.point1 = right_top.point_at(t)
+        #     else:
+        #         # 剩余长度在 right_bottom 上
+        #         remaining = target_length - right_top.length()
+        #         t = 1.0 - remaining / right_bottom.length()
+        #         self.point1 = right_bottom.point_at(t)
+
+        # Default placement
+        self.set_pivot(crotch_end_pt)
+        self.translation = [-0.5, - hips_depth - crotch_depth_diff + 5, 0]
+
+        # Out interfaces
+        # 根据前后片设置不同的ruffle值数量
+        if not is_front:
+            # 后片：right_bottom_combined有1条边 + right_top有1条边 = 2条边
+            outside_ruffle = [1, hipline_ext]
+        else:
+            # 前片：right_bottom_combined有1条边 + right_top有1条边 = 2条边
+            outside_ruffle = [1, hipline_ext]
+        
+        self.interfaces = {
+            'outside': pyg.Interface(
+                self,
+                pyg.EdgeSequence(right_bottom_combined, right_top),
+                ruffle=outside_ruffle),
+            'crotch': pyg.Interface(self, crotch_curve),
+            'inside': pyg.Interface(self, left),
+            'bottom': pyg.Interface(self, bottom)
+        }
+
+        # Add top dart
+        # NOTE: Ruffle indicator to match to waistline proportion for correct balance line matching
+        # 计算原始的 dart_width（基于腰臀差分配）
+        dart_width_raw = w_diff - hw_shift
+        # 安全化：限制省道宽度不超过腰线长度的 20%，且至少 0.5cm
+        top_len = top.length()
+        dart_width = max(0.5, min(dart_width_raw, top_len * 0.2))
+        
+        # 将 dart_position 转换为相对于腰线长度的比例值
+        # 原始 dart_position 是基于未平移的腰线，现在需要适配新的腰线长度
+        # 假设原始腰线长度约为 waist（设计参数），计算比例
+        original_waist_len = waist  # 原始腰线长度
+        dart_position_ratio = dart_position / original_waist_len if original_waist_len > 0 else 0.3
+        # 根据新腰线长度重新计算 dart_position
+        dart_position = dart_position_ratio * top_len
+        
+        # 安全化 dart_position：不能太靠近端点，确保在腰线长度范围内
+        # 限制在腰线长度的 15% 到 85% 之间
+        dart_position = max(top_len * 0.15, min(dart_position, top_len * 0.85))
+
+        if w_diff > hw_shift:
+            top_edges, int_edges = self.add_darts(
+                top, dart_width, dart_depth, dart_position, double_dart=double_dart)
+            self.interfaces['top'] = pyg.Interface(
+                self, int_edges, 
+                ruffle=waist / match_top_int_to if match_top_int_to is not None else 1.
+            ) 
+            self.edges.substitute(top, top_edges)
+        else:
+            self.interfaces['top'] = pyg.Interface(
+                self, top, 
+                ruffle=waist / match_top_int_to if match_top_int_to is not None else 1.
+        )
+
+    def add_darts(self, top, dart_width, dart_depth, dart_position, double_dart=False):
+        
+        # zyw新增：
+        if double_dart:
+            # 省道往后中方向移动1（远离侧缝，靠近后中线）
+            # 使用相对比例计算，确保适配不同腰线长度
+            top_len = top.length()
+            # 将 dart_position 转换为比例（相对于腰线长度）
+            dart_pos_ratio = dart_position / top_len if top_len > 0 else 0.3
+            
+            # 省道往后中方向移动1（正X方向，靠近后中线）
+            back_center_shift = 1.0 / top_len  # 转换为比例
+            
+            dist_ratio = dart_pos_ratio * 0.5  # 省道间距
+            
+            # 计算两个省道的位置（从腰线起点开始的绝对距离）
+            # 第一个省道（靠近后中线）
+            dart1_pos = top_len * (dart_pos_ratio + dist_ratio / 2 + dart_width / top_len / 2 + dart_width / top_len / 4 - back_center_shift)
+            # 第二个省道（靠近外侧缝）
+            dart2_pos = top_len * (dart_pos_ratio - dist_ratio / 2 + dart_width / top_len / 4 - back_center_shift)
+            
+            # 转换为负偏移（从边末端计算）
+            offsets_mid = [
+                - dart1_pos,
+                - dart2_pos,
+            ]
+            darts = [
+                pyg.EdgeSeqFactory.dart_shape(dart_width / 2, dart_depth * 0.9), # smaller
+                pyg.EdgeSeqFactory.dart_shape(dart_width / 2, dart_depth)
+            ]
+        else:
+            # 单省道：转换为负偏移
+            offsets_mid = [
+                - dart_position - dart_width / 2,
+            ]
+            darts = [
+                pyg.EdgeSeqFactory.dart_shape(dart_width, dart_depth)
+            ]
+        top_edges, int_edges = pyg.EdgeSequence(top), pyg.EdgeSequence(top)
+
+        for off, dart in zip(offsets_mid, darts):
+            left_edge_len = top_edges[-1].length()
+            offset = left_edge_len + off
+            # ===== 边界保护 =====
+            # 确保 offset 在有效范围内：[dart_width/2, left_edge_len - dart_width/2]
+            min_offset = dart_width / 2 + 0.5
+            max_offset = left_edge_len - dart_width / 2 - 0.5
+            if offset < min_offset:
+                offset = min_offset
+            elif offset > max_offset:
+                offset = max_offset
+            # 最终安全检查
+            offset = max(0.5, min(offset, left_edge_len - 0.5))
+            # ==================
+            top_edges, int_edges = self.add_dart(
+                dart,
+                top_edges[-1],
+                offset=offset,
+                edge_seq=top_edges, 
+                int_edge_seq=int_edges
+            )
+
+        return top_edges, int_edges
+        
+
+class PantsHalf(BaseBottoms):
+    def __init__(self, body, design, tag='', rise=None) -> None:
+        super().__init__(body, design, tag, rise=rise)
+        # 检查design结构：如果design已经有'length'、'width'等pants特有键，说明已经是pants子字典
+        if 'pants' in design:
+            design = design['pants']
+        # ---- zyw增加了读取臀围调整参数 ----
+        hip_adj_front = design.get('hip_adj_front', {}).get('v', -0.7)
+        hip_adj_back  = design.get('hip_adj_back', {}).get('v', 0.7)
+        self.rise = design['rise']['v'] if rise is None else rise
+        waist, hips_depth, waist_back = self.eval_rise(self.rise)
+
+        # NOTE: min value = full sum > leg curcumference
+        # Max: pant leg falls flat from the back
+        # Mostly from the back side
+        # => This controls the foundation width of the pant
+        min_ext = body['leg_circ'] - body['hips'] / 2  + 5  # 2 inch ease: from pattern making book 
+        front_hip = (body['hips'] - body['hip_back_width']) / 2
+        crotch_extention = min_ext * design['width']['v']  
+        front_extention = front_hip / 4    # From pattern making book
+        back_extention = crotch_extention - front_extention
+
+        length, cuff_len = design['length']['v'], design['cuff']['cuff_len']['v']
+        if design['cuff']['type']['v']: 
+            if length - cuff_len < design['length']['range'][0]:   # Min length from paramss
+                # Cannot be longer then a pant
+                cuff_len = length - design['length']['range'][0]
+            # Include the cuff into the overall length, 
+            # unless the requested length is too short to fit the cuff 
+            # (to avoid negative length)
+            length -= cuff_len
+        length *= body['_leg_length']
+        cuff_len *= body['_leg_length']
+
+        # ---- zyw新增：读取侧缝倾斜角度 ----
+        side_seam_tilt = design.get('side_seam_tilt', {}).get('v', -5.0)
+
+        # 读取后腰平移量
+        back_waist_trans = design.get('back_waist_trans', {}).get('v', 0.0)
+
+        self.front = PantPanel(
+            f'pant_f_{tag}', body, design,
+            length=length,
+            waist=(waist - waist_back) / 2,
+            hips=(body['hips'] - body['hip_back_width']) / 2+ hip_adj_front,  # zyw增加了前片减量
+            hips_depth=hips_depth,
+            hipline_ext=1.1,
+            dart_position = body['bum_points'] / 2,
+            crotch_width=front_extention,
+            match_top_int_to=(waist - waist_back) / 2,
+            is_front=True,
+            front_drop=1.0,
+            ).translate_by([0, body['_waist_level'] - 5, 0])
+
+        self.back = PantPanel(
+            f'pant_b_{tag}', body, design,
+            length=length,
+            waist=waist_back / 2,
+            hips=body['hip_back_width'] / 2+ hip_adj_back,  # zyw增加了后片增量
+            hips_depth=hips_depth,
+            hipline_ext=1.1,
+            dart_position = body['bum_points'] / 2,
+            crotch_width=back_extention,
+            match_top_int_to=body['waist_back_width'] / 2,
+            double_dart=True,
+            side_seam_tilt_angle=side_seam_tilt  # zyw新增：后片侧缝倾斜角度
+            ).translate_by([0, body['_waist_level'] - 5, -20])
+
+        self.cuff = None
+        if design['cuff']['type']['v']:
+            self.cuff = bands.Cuff(
+                f'cuff_{tag}',
+                body,
+                design['cuff'],
+                length=cuff_len,
+                top=self.front.interfaces['bottom'],
+                bottom=self.back.interfaces['bottom']
+            )
+
+        self._interfaces = {
+            'top': pyg.Interface.from_multiple(self.front.interfaces['top'], self.back.interfaces['top']),
+            'crotch': pyg.Interface.from_multiple(self.front.interfaces['crotch'], self.back.interfaces['crotch']),
+            'outside': pyg.Interface.from_multiple(self.front.interfaces['outside'], self.back.interfaces['outside']),
+            'inside': pyg.Interface.from_multiple(self.front.interfaces['inside'], self.back.interfaces['inside']),
+            'bottom': pyg.Interface.from_multiple(self.front.interfaces['bottom'], self.back.interfaces['bottom'])
+        }
+        # 同步到 interfaces 属性，供外部访问
+        self.interfaces = self._interfaces
+
+    def get_interfaces(self):
+        return self._interfaces
+
+
+class Pants(BaseBottoms):
+    """完整裤子类（包含左右裤片）"""
+    def __init__(self, body, design, rise=None) -> None:
+        super().__init__(body, design, rise=rise)
+        
+        self.right = PantsHalf(body, design, tag='r', rise=rise)
+        self.left = PantsHalf(body, design, tag='l', rise=rise).mirror()
+
+        self.stitching_rules = pyg.Stitches(
+            (self.right.interfaces['crotch'], self.left.interfaces['crotch']),
+            (self.right.interfaces['inside'], self.left.interfaces['inside']),
+        )
+
+        self.interfaces = {
+            'top': pyg.Interface.from_multiple(
+                self.right.interfaces['top'],
+                self.left.interfaces['top']),
+            'crotch': pyg.Interface.from_multiple(
+                self.right.interfaces['crotch'],
+                self.left.interfaces['crotch']),
+            'outside': pyg.Interface.from_multiple(
+                self.right.interfaces['outside'],
+                self.left.interfaces['outside']),
+            'inside': pyg.Interface.from_multiple(
+                self.right.interfaces['inside'],
+                self.left.interfaces['inside']),
+            'bottom': pyg.Interface.from_multiple(
+                self.right.interfaces['bottom'],
+                self.left.interfaces['bottom'])
+        }
+
+    def get_rise(self):
+        return self.right.get_rise()
+    
+    def length(self):
+        return self.right.length()

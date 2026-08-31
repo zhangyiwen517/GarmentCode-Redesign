@@ -1175,24 +1175,18 @@ class BoxMesh(wrappers.VisPattern):
         * self (BoxMesh object): Instance of BoxMesh class from which the function is called
         """
 
+        # NOTE: don't need this
         # Try the stitching -- performs global vertex matching
         same_panel_stitching_dict = self._stitch_vertices()
 
         # Check stitches validity: edge collapse (start==end)
         # NOTE: Separating checks by error type to reduce number of invalid stitch orientations to process
-        valid, invalid_ids = self._is_stitching_valid(
+        # in each case
+        valid, _ = self._is_stitching_valid(
             same_panel_stitching_dict, 
             front_end_only=False)
         if not valid:
             print(f'{self.__class__.__name__}::{self.name}::ERROR::Invalid stitching. Unable to fix')
-            print(f'  Invalid stitch IDs: {invalid_ids}')
-            for sid in invalid_ids:
-                stitch = self.stitches[sid]
-                panel1 = self.panels[stitch.panel_1]
-                panel2 = self.panels[stitch.panel_2]
-                edge1 = panel1.edges[stitch.edge_1]
-                edge2 = panel2.edges[stitch.edge_2]
-                print(f'  Stitch {sid}: {stitch.panel_1}[edge {stitch.edge_1}] (vert_range={edge1.vertex_range}) <-> {stitch.panel_2}[edge {stitch.edge_2}] (vert_range={edge2.vertex_range})')
             raise StitchingError()
 
     # !SECTION
@@ -1458,21 +1452,13 @@ class BoxMesh(wrappers.VisPattern):
 
             #Add panel name to stitch_segmentation
             n_non_stitches_panel = len(panel.panel_vertices) - n_stitches_panel
-            self.stitch_segmentation += [[panel.panel_name]] * n_non_stitches_panel
-
-            # Populate verts_glob_loc for non-stitch vertices so that
-            # surface-stitch remapping can safely index into it.
-            for loc_id in range(n_stitches_panel, len(panel.panel_vertices)):
-                glob_id = self._local_to_global_vertex_id(panel, loc_id)
-                while len(self.verts_glob_loc) <= glob_id:
-                    self.verts_glob_loc.append([])
-                self.verts_glob_loc[glob_id].append((panel.panel_name, loc_id))
+            self.stitch_segmentation += [panel.panel_name] * n_non_stitches_panel
 
         # NOTE: self.vertices now contains all mesh vertices
         # self.faces now contains all mesh faces
 
     # !SECTION
-    # SECTION -- Surface stitches (patch pocket attachments)
+    # SECTION -- Surface stitch utilities
     def _local_to_global_vertex_id(self, panel, loc_id):
         n_stitches_panel = panel.n_stitches
         if loc_id < n_stitches_panel:
@@ -1484,54 +1470,54 @@ class BoxMesh(wrappers.VisPattern):
             return []
         if max_distance is None:
             max_distance = max(self.mesh_resolution * 1.75, 0.25)
-        
+
         vertices = np.asarray(panel.panel_vertices, dtype=float)
         start = np.asarray(segment[0], dtype=float)
         end = np.asarray(segment[1], dtype=float)
         direction = end - start
         denominator = float(np.dot(direction, direction))
-        
+
         if denominator < 1e-8:
             raise PatternLoadingError("Surface-stitch target segment is zero-length")
-        
+
         selected = []
         used = set()
-        
+
         for t in np.linspace(0.0, 1.0, count):
             requested_point = start + direction * t
             distances = np.linalg.norm(vertices - requested_point, axis=1)
             ordered_ids = np.argsort(distances)
             chosen = None
-            
+
             for loc_id in ordered_ids:
                 loc_id = int(loc_id)
                 if loc_id in used:
                     continue
                 chosen = loc_id
                 break
-            
+
             if chosen is None:
                 continue
-            
+
             if distances[chosen] > max_distance:
                 print(
                     f"{self.__class__.__name__}::{self.name}::WARNING::"
                     f"surface stitch on {panel.panel_name} is "
                     f"{distances[chosen]:.3f} cm from requested segment"
                 )
-            
+
             selected.append(chosen)
             used.add(chosen)
-        
+
         return selected
 
     def _surface_stitch_pairs(self):
         pairs = []
         surface_stitches = self.pattern.get("surface_stitches", [])
-        
+
         if not surface_stitches:
             return pairs
-        
+
         for stitch_id, stitch in enumerate(surface_stitches):
             try:
                 source = stitch["source"]
@@ -1544,7 +1530,7 @@ class BoxMesh(wrappers.VisPattern):
                 raise PatternLoadingError(
                     f"Invalid surface stitch {stitch_id}: {stitch}"
                 ) from exc
-            
+
             # Transform target segment from pre-pivot to post-pivot coords
             # if it is expressed in target panel's local 2D space.
             if target.get("coordinate_space") == "target_panel_2d":
@@ -1554,22 +1540,22 @@ class BoxMesh(wrappers.VisPattern):
                     target_segment = [
                         [pt[0] - pdx, pt[1] - pdy] for pt in target_segment
                     ]
-            
+
             source_loc_ids = list(source_edge.vertex_range)
-            
+
             if stitch.get("swap", False):
                 source_loc_ids.reverse()
-            
+
             target_loc_ids = self._surface_stitch_target_loc_ids(
                 target_panel, target_segment, len(source_loc_ids)
             )
-            
+
             if len(target_loc_ids) != len(source_loc_ids):
                 raise PatternLoadingError(
                     f"Surface stitch {stitch_id} mapped "
                     f"{len(target_loc_ids)} of {len(source_loc_ids)} vertices"
                 )
-            
+
             for source_id, target_id in zip(source_loc_ids, target_loc_ids):
                 pairs.append(
                     (
@@ -1578,35 +1564,35 @@ class BoxMesh(wrappers.VisPattern):
                         f"stitch_surface_{stitch_id}",
                     )
                 )
-        
+
         return pairs
 
     def _remap_surface_stitch_vertices(self, pairs):
         if not pairs:
             return
-        
+
         parent = list(range(len(self.vertices)))
-        
+
         def find(x):
             while parent[x] != x:
                 parent[x] = parent[parent[x]]
                 x = parent[x]
             return x
-        
+
         def union(a, b):
             ra, rb = find(a), find(b)
             if ra != rb:
                 parent[ra] = rb
-        
+
         for source_glob, target_glob, stitch_label in pairs:
             union(source_glob, target_glob)
-        
+
         old_to_new = {}
         new_vertices = []
         new_verts_glob_loc = []
         new_stitch_segmentation = []
         new_idx = 0
-        
+
         # Ensure verts_glob_loc and stitch_segmentation are padded to match
         # the length of self.vertices (non-stitch vertices added during
         # finalise_mesh may not have populated them originally).
@@ -1629,15 +1615,15 @@ class BoxMesh(wrappers.VisPattern):
                 for seg in self.stitch_segmentation[glob_id]:
                     if seg not in new_stitch_segmentation[target_new]:
                         new_stitch_segmentation[target_new].append(seg)
-        
+
         for (pname, lid), glob in list(self.verts_loc_glob.items()):
             if glob in old_to_new:
                 self.verts_loc_glob[(pname, lid)] = old_to_new[glob]
-        
+
         self.vertices = new_vertices
         self.verts_glob_loc = new_verts_glob_loc
         self.stitch_segmentation = new_stitch_segmentation
-        
+
         new_faces = []
         for face in self.faces:
             new_face = [old_to_new.get(v, v) for v in face]
@@ -1645,7 +1631,7 @@ class BoxMesh(wrappers.VisPattern):
                 continue
             new_faces.append(new_face)
         self.faces = new_faces
-        
+
         new_faces_with_texture = []
         for tex_face in self.faces_with_texture:
             new_tex_face = list(tex_face)
@@ -1656,13 +1642,13 @@ class BoxMesh(wrappers.VisPattern):
                 continue
             new_faces_with_texture.append(new_tex_face)
         self.faces_with_texture = new_faces_with_texture
-        
+
         new_orig_lens = {}
         for key, value in self.orig_lens.items():
             new_key = tuple(old_to_new.get(v, v) for v in key)
             new_orig_lens[new_key] = value
         self.orig_lens = new_orig_lens
-        
+
         self._add_surface_stitch_orig_lens(old_to_new)
 
     def _add_surface_stitch_orig_lens(self, old_to_new):
@@ -1676,19 +1662,19 @@ class BoxMesh(wrappers.VisPattern):
 
     def apply_surface_stitches(self):
         pairs = self._surface_stitch_pairs()
-        
+
         if not pairs:
             return
-        
+
         vertex_count_before = len(self.vertices)
         self._remap_surface_stitch_vertices(pairs)
-        
+
         # After vertex remapping, some faces (e.g. pocket panel faces) may
         # not have their edge lengths recorded in orig_lens because they had
         # no stitch vertices. Add them now so the physics engine can find
         # all required edge lengths.
         self._fill_missing_orig_lens()
-        
+
         print(
             f"{self.__class__.__name__}::{self.name}::INFO::"
             f"Applied surface stitches; merged "
@@ -1736,21 +1722,10 @@ class BoxMesh(wrappers.VisPattern):
 
         # Add labels on stitched vertices using stitch_id_label
         for v_id, seg_labels in enumerate(self.stitch_segmentation):
-            if not seg_labels:
-                continue
+            if 'stitch' not in seg_labels[0]:  # Processed all stitches
+                break
             for stitch in seg_labels:
-                if not stitch.startswith('stitch_'):
-                    continue
-                # Handle both "stitch_N" and "stitch_surface_N"
-                parts = stitch.split('_')
-                if parts[-1].isdigit():
-                    id = int(parts[-1])
-                elif len(parts) >= 3 and parts[-2] == 'surface' and parts[-1].isdigit():
-                    id = int(parts[-1])
-                else:
-                    continue
-                if id >= len(self.stitches):
-                    continue
+                id = int(stitch.split('_')[-1])
                 label = self.stitches[id].label
                 if label is not None:   # Found a labeled vertex!
                     self.vertex_labels.setdefault(label, []).append(v_id)

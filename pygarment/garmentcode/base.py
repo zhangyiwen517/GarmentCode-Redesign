@@ -22,6 +22,9 @@ class BaseComponent(ABC):
         # Rules for connecting subcomponents
         self.stitching_rules = Stitches()
 
+        # Surface stitches (e.g. patch pocket attachments)
+        self.surface_stitches = []
+
     # Info
     def pivot_3D(self):
         """Pivot location of a component in 3D"""
@@ -137,5 +140,3 @@ class BaseComponent(ABC):
         # TODO not just placement by the midpoint of the interfaces?
         # It created a little overlap when both interfaces are angled a little differently
         return self
-
-

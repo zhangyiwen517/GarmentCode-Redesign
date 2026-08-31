@@ -19,6 +19,7 @@ import asyncio
 
 # Custom
 from .gui_pattern import GUIPattern
+from sematic_editor.core import SemanticPatternEditor, normalize_semantic_predictions
 
 
 icon_github = """
@@ -73,7 +74,13 @@ class GUIState:
         # Elements
         self.ui_design_subtabs = {}
         self.ui_pattern_display = None
-        self._async_executor = ThreadPoolExecutor(1)  
+        self.ui_core_svg = None
+        self.ui_core_command = None
+        self.ui_core_report = None
+        self.ui_core_3d_scene = None
+        self.ui_core_garment_3d = None
+        self._async_executor = ThreadPoolExecutor(1)
+        self.semantic_editor = SemanticPatternEditor()
 
         self.pattern_state.reload_garment()
         self.stylings()
@@ -249,6 +256,7 @@ class GUIState:
             with ui.tabs().classes('shrink-0') as tabs:
                 self.ui_2d_tab = ui.tab('Sewing Pattern')
                 self.ui_3d_tab = ui.tab('3D view')
+                self.ui_core_tab = ui.tab('Core Editor')
             with ui.tab_panels(tabs, value=self.ui_2d_tab, animated=True).classes(
                 'w-full flex-1 min-h-0 items-center'
             ):
@@ -256,6 +264,8 @@ class GUIState:
                     self.def_pattern_display()
                 with ui.tab_panel(self.ui_3d_tab).classes('w-full h-full items-center p-0 m-0'):
                     self.def_3d_scene()
+                with ui.tab_panel(self.ui_core_tab).classes('w-full h-full items-center p-0 m-0'):
+                    self.def_core_editor()
 
             ui.button(
                 'Download Current Garment', on_click=lambda: self.state_download()
@@ -759,6 +769,202 @@ class GUIState:
         await self.update_pattern_ui_state()
 
         self.toggle_param_update_events(self.ui_design_refs)
+
+    # !SECTION
+
+    # SECTION -- Core Editor
+    def def_core_editor(self):
+        """Core semantic pattern editor panel"""
+        with ui.column().classes('w-full h-full p-4 gap-4 overflow-auto'):
+            ui.label('Core Semantic Pattern Editor').classes('text-2xl font-bold')
+            ui.label('Upload a semantic pattern JSON file and apply edits').classes('text-base text-gray-600')
+            
+            # Upload section
+            with ui.card().classes('w-full p-4 gap-2'):
+                ui.label('Upload Pattern').classes('text-lg font-semibold')
+                
+                async def handle_core_upload(e: events.UploadEventArguments):
+                    try:
+                        data = e.content.read()
+                        self.semantic_editor.load_bytes(data, e.name)
+                        ui.notify(f'Successfully loaded {e.name}', type='positive')
+                        self.update_core_editor_display()
+                    except Exception as ex:
+                        ui.notify(f'Failed to load pattern: {str(ex)}', type='negative')
+                
+                ui.upload(
+                    label='Upload semantic pattern JSON',
+                    on_upload=handle_core_upload
+                ).classes('w-full').props('accept=".json"')
+
+            # 2D Pattern Preview section
+            with ui.card().classes('w-full p-4 gap-2'):
+                ui.label('2D Pattern Preview').classes('text-lg font-semibold')
+                self.ui_core_svg = ui.image('').props('fit=contain').classes(
+                    'w-full h-96 bg-white border border-gray-200'
+                )
+            
+            # 3D Preview section
+            with ui.card().classes('w-full p-4 gap-2'):
+                ui.label('3D Preview').classes('text-lg font-semibold')
+                with ui.row().classes('w-full gap-2 items-center'):
+                    ui.button('Run Simulation', on_click=self.update_core_3d_scene)
+                    ui.label('INFO: Simulation takes a few minutes').classes(
+                        'text-sm text-gray-500'
+                    )
+                
+                # 3D scene
+                camera_location = [0, -4.15, 1.25]
+                y_fov = 30
+                camera = self.create_camera(camera_location, y_fov)
+                with ui.scene(
+                    width=800, height=600,
+                    camera=camera, grid=False, background_color='#ffffff'
+                ).classes('w-full h-96') as self.ui_core_3d_scene:
+                    self.create_lights(self.ui_core_3d_scene, intensity=60.)
+                    self.ui_core_garment_3d = None
+            
+            # Edit command section
+            with ui.card().classes('w-full p-4 gap-2'):
+                ui.label('Apply Edit').classes('text-lg font-semibold')
+                
+                with ui.row().classes('w-full gap-2'):
+                    self.ui_core_command = ui.input(
+                        label='Edit command (e.g., "add dart to LFP at 12cm from HEL with width 2cm and depth 10cm")'
+                    ).classes('flex-1')
+                    
+                    ui.button('Apply', on_click=self.apply_core_command).classes('self-end')
+            
+            # Report section
+            with ui.card().classes('w-full p-4 gap-2'):
+                ui.label('Edit Report').classes('text-lg font-semibold')
+                with ui.scroll_area().classes('w-full h-64'):
+                    self.ui_core_report = ui.markdown('No edits applied yet').classes('text-sm')
+            
+            # Reset button
+            ui.button('Reset to Original', on_click=self.reset_core_editor).classes('self-start')
+
+    def update_core_editor_display(self):
+        """Update the core editor display with current report"""
+    # Update SVG preview
+        if self.semantic_editor.has_pattern and self.ui_core_svg is not None:
+            try:
+                svg_content = self.semantic_editor.render_svg()
+                if svg_content:
+                    import base64
+                    svg_bytes = svg_content.encode('utf-8')
+                    svg_b64 = base64.b64encode(svg_bytes).decode('ascii')
+                    data_uri = f"data:image/svg+xml;base64,{svg_b64}"
+                    self.ui_core_svg.set_source(data_uri)
+            except Exception as ex:
+                print(f"Failed to render SVG: {ex}")
+                traceback.print_exc()
+    
+    # ... 原有的 report 更新代码 ...
+        if self.semantic_editor.report:
+            report_text = "## Edit Report\n\n"
+            for entry in self.semantic_editor.report:
+                report_text += f"- **Operation**: {entry.get('operation', 'N/A')}\n"
+                report_text += f"  - **Panel**: {entry.get('panel', entry.get('target_panel', 'N/A'))}\n"
+                if 'before_angle_deg' in entry:
+                    report_text += f"  - **Before Angle**: {entry['before_angle_deg']:.2f}°\n"
+                    report_text += f"  - **After Angle**: {entry['after_angle_deg']:.2f}°\n"
+                    report_text += f"  - **Target Angle**: {entry['target_angle_deg']:.2f}°\n"
+                if 'changed' in entry:
+                    report_text += f"  - **Changed**: {'Yes' if entry['changed'] else 'No'}\n"
+                # Patch pocket info
+                if entry.get('operation') == 'add_patch_pocket':
+                    report_text += f"  - **Position**: {entry.get('position', 'front')}\n"
+                    report_text += f"  - **Pocket Panel**: {entry.get('pocket_panel', 'N/A')}\n"
+                    report_text += f"  - **Width**: {entry.get('pocket_width_cm', 'N/A')} cm\n"
+                    report_text += f"  - **Height**: {entry.get('pocket_height_cm', 'N/A')} cm\n"
+                    if 'distance_from_center_front_cm' in entry:
+                        report_text += f"  - **Distance from CF**: {entry['distance_from_center_front_cm']:.2f} cm\n"
+                    if 'distance_from_center_back_cm' in entry:
+                        report_text += f"  - **Distance from CB**: {entry['distance_from_center_back_cm']:.2f} cm\n"
+                    if 'distance_from_hem_cm' in entry:
+                        report_text += f"  - **Distance from Hem**: {entry['distance_from_hem_cm']:.2f} cm\n"
+                    if 'distance_from_waist_cm' in entry:
+                        report_text += f"  - **Distance from Waist**: {entry['distance_from_waist_cm']:.2f} cm\n"
+                    report_text += f"  - **Surface Offset**: {entry.get('surface_offset_cm', 'N/A')} cm\n"
+                    report_text += f"  - **Surface Stitches**: {entry.get('surface_stitch_count', 0)}\n"
+                report_text += "\n"
+            self.ui_core_report.set_content(report_text)
+        else:
+            self.ui_core_report.set_content('No edits applied yet')
+
+    async def apply_core_command(self):
+        """Apply the core edit command"""
+        command_text = self.ui_core_command.value
+        if not command_text:
+            ui.notify('Please enter an edit command', type='warning')
+            return
+        
+        if not self.semantic_editor.has_pattern:
+            ui.notify('Please upload a semantic pattern first', type='warning')
+            return
+        
+        try:
+            self.semantic_editor.apply_text_command(command_text)
+            ui.notify('Command applied successfully', type='positive')
+            self.update_core_editor_display()
+            self.ui_core_command.value = ''
+        except Exception as ex:
+            ui.notify(f'Failed to apply command: {str(ex)}', type='negative')
+
+    async def update_core_3d_scene(self):
+        """Run simulation for core editor pattern and update 3D view"""
+        if not self.semantic_editor.has_pattern:
+            ui.notify('Please upload a pattern first', type='warning')
+            return
+        
+        try:
+            self.spin_dialog.open()
+            
+            # Run simulation in background
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                self._async_executor, 
+                self.semantic_editor.run_simulation
+            )
+            
+            if result.success and result.glb_path:
+                # Copy GLB to static files directory
+                import shutil
+                core_glb_name = f'core_garm_{time.time()}.glb'
+                core_glb_path = self.local_path_3d / core_glb_name
+                shutil.copy(result.glb_path, core_glb_path)
+                
+                # Update 3D scene
+                if self.ui_core_garment_3d is not None:
+                    self.ui_core_garment_3d.delete()
+                
+                with self.ui_core_3d_scene:
+                    self.ui_core_garment_3d = self.ui_core_3d_scene.gltf(
+                        f'geo/{core_glb_name}'
+                    ).scale(0.01).rotate(np.pi / 2, 0., 0.)
+                
+                ui.notify('3D simulation completed!', type='positive')
+            else:
+                ui.notify(f'Simulation failed: {result.message}', type='negative')
+                if result.traceback_text:
+                    print(result.traceback_text)
+            
+            self.spin_dialog.close()
+            
+        except Exception as ex:
+            self.spin_dialog.close()
+            ui.notify(f'3D simulation error: {str(ex)}', type='negative')
+            traceback.print_exc()
+            
+    def reset_core_editor(self):
+        """Reset the core editor to original pattern"""
+        try:
+            self.semantic_editor.reset_to_original()
+            ui.notify('Reset to original pattern', type='positive')
+            self.update_core_editor_display()
+        except Exception as ex:
+            ui.notify(f'Failed to reset: {str(ex)}', type='negative')
 
     # !SECTION
 

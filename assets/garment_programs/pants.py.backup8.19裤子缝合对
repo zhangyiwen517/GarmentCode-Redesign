@@ -3,7 +3,6 @@ import numpy as np
 
 import pygarment as pyg
 from assets.garment_programs.base_classes import BaseBottoms
-from pygarment.pattern import rotation as rotation_tools
 from assets.garment_programs import bands
 
 
@@ -199,17 +198,16 @@ class PantPanel(pyg.Panel):
         self.edges = pyg.EdgeSequence(
             right_bottom_combined, right_top, top, crotch_curve, left
         ).close_loop()
+        bottom = self.edges[-1]
 
-        # ---- 为门襟创建接口 ----
-        # 前后片都使用相同的分段结构，确保inside接口顶点映射正确
+        # ---- 为门襟创建接口（仅前片） ----
         placket_attach_segments = None
         inside_segments = None
-        left_segments = left.subdivide_len([0.35, 0.30, 0.35])
         if is_front:
+            left_segments = left.subdivide_len([0.35, 0.30, 0.35])
             placket_attach_segments = [left_segments[0], left_segments[1], left_segments[2]]
-        inside_segments = [left_segments[0], left_segments[2]]
-        self.edges.substitute(left, left_segments)
-        bottom = self.edges[-1]
+            inside_segments = [left_segments[0], left_segments[2]]  # 顶部和底部用于下裆缝合
+            self.edges.substitute(left, left_segments)
 
         self.set_pivot(crotch_end_pt)
         # 增加X方向间距，避免左右裤片在3D模拟时相互穿透
@@ -397,11 +395,6 @@ class PantsHalf(BaseBottoms):
             semantic_label="LBP" if tag == 'l' else "RBP"
         ).translate_by([0, body['_waist_level'] - 5, -20])
 
-        self._back_pivot = [
-            body['hip_back_width'] / 2 + hip_adj_back + back_extention,
-            length - body['crotch_hip_diff'],
-        ]
-
         self.cuff = None
         if design['cuff']['type']['v']:
             self.cuff = bands.Cuff(
@@ -434,17 +427,112 @@ class PantsHalf(BaseBottoms):
             self.front_placket.translate_by([0, -distance_from_waist, 0])
             self.front_placket.translate_by([0, 0, 0.1])
             self.subs.append(self.front_placket)
-            # self.stitching_rules.append(
-            #     (self.front_placket.interfaces['attach'], self.front.interfaces['placket_attach'])
-            # ) # jingma
+            self.stitching_rules.append(
+                (self.front_placket.interfaces['attach'], self.front.interfaces['placket_attach'])
+            )
 
         # ---- 后贴袋（使用 surface_stitches） ----
         self.back_pocket = None
-        self._pocket_config = None
-        self._pocket_tag = tag
-        if design.get('back_patch_pocket', {}).get('enabled', {}).get('v', False):
-            self._pocket_config = design['back_patch_pocket']
-            self._create_pocket()
+        pocket_config = design.get('back_patch_pocket', {})
+        if pocket_config.get('enabled', {}).get('v', False):
+            from assets.garment_programs.pockets import PatchPocket
+            pocket_width = pocket_config.get('pocket_width', {}).get('v', 11)
+            pocket_depth = pocket_config.get('pocket_depth', {}).get('v', 11)
+            pocket_type = pocket_config.get('pocket_type', {}).get('v', 'rectangular')
+            distance_from_waist = pocket_config.get('distance_from_waist', {}).get('v', 5)
+            distance_from_side = pocket_config.get('distance_from_side', {}).get('v', 6)
+
+            back_panel = self.back
+            vertices = back_panel.edges.verts()
+            x_min = min(v[0] for v in vertices)
+            x_max = max(v[0] for v in vertices)
+            y_min = min(v[1] for v in vertices)
+            y_max = max(v[1] for v in vertices)
+
+            pocket_x = x_min + distance_from_side + pocket_width / 2
+            pocket_y = y_max - distance_from_waist - pocket_depth / 2
+
+            half_w = pocket_width / 2
+            half_h = pocket_depth / 2
+
+            # 验证口袋尺寸
+            if pocket_width <= 0 or pocket_depth <= 0:
+                print(f"WARNING: Invalid pocket dimensions: width={pocket_width}, depth={pocket_depth}")
+                self.back_pocket = None
+                return
+            
+            self.back_pocket = PatchPocket(
+                f'back_pocket_{tag}',
+                width=pocket_width,
+                depth=pocket_depth,
+                pocket_type=pocket_type,
+            )
+
+            # PatchPocket已经创建了口袋面板和edges，不需要重新创建
+            pocket_panel = self.back_pocket.panel
+
+            # 计算口袋在目标裤片上的位置（口袋左下角在目标裤片局部坐标系中的位置）
+            pocket_left = x_min + distance_from_side
+            pocket_bottom = y_max - distance_from_waist - pocket_depth
+
+            # 设置口袋面板的translation和rotation
+            # 口袋面板使用局部坐标系（原点在左下角）
+            pocket_panel = self.back_pocket.panel
+            # scipy Rotation对象直接赋值即可（不可变对象）
+            pocket_panel.rotation = back_panel.rotation
+            
+            # 沿目标裤片外法向偏移，避免共面（REDESIGN.md要求）
+            import pygarment.pattern.rotation as rotation_tools
+            import numpy as np
+            
+            # back_panel.rotation是scipy Rotation对象，需要转换为欧拉角列表
+            target_rotation_euler = back_panel.rotation.as_euler('XYZ', degrees=True)
+            R_target = rotation_tools.euler_xyz_to_R(target_rotation_euler)
+            target_normal = R_target @ np.array([0.0, 0.0, 1.0])
+            surface_offset_cm = 1.5  # 沿法向偏移1.5cm
+            
+            # 口袋面板的translation：先复制目标裤片，然后沿法向偏移
+            pocket_translation = (
+                np.asarray(back_panel.translation, dtype=float)
+                + target_normal * surface_offset_cm
+            )
+            pocket_panel.translate_to(pocket_translation)
+            
+            # 注意：口袋面板的局部坐标系原点在左下角[0,0]
+            # segment坐标需要在目标裤片的局部坐标系中
+            # 口袋左下角对应目标裤片上的位置是(pocket_left, pocket_bottom)
+
+            # 生成surface_stitches：袋底(0)、右侧(1)、左侧(3)，袋口(2)不缝
+            sewn_edges = [0, 1, 3]
+            surface_stitches = []
+            for edge_id in sewn_edges:
+                if edge_id == 0:  # 底边：从(0,0)到(pocket_width, 0)
+                    start = [pocket_left, pocket_bottom]
+                    end = [pocket_left + pocket_width, pocket_bottom]
+                elif edge_id == 1:  # 右边：从(pocket_width, 0)到(pocket_width, pocket_depth)
+                    start = [pocket_left + pocket_width, pocket_bottom]
+                    end = [pocket_left + pocket_width, pocket_bottom + pocket_depth]
+                elif edge_id == 3:  # 左边：从(0, pocket_depth)到(0, 0)
+                    start = [pocket_left, pocket_bottom + pocket_depth]
+                    end = [pocket_left, pocket_bottom]
+                else:
+                    continue
+
+                surface_stitches.append({
+                    'source': {
+                        'panel': pocket_panel.name,
+                        'edge': edge_id,
+                    },
+                    'target': {
+                        'panel': back_panel.name,
+                        'segment': [start, end],
+                        'coordinate_space': 'target_panel_2d',
+                    },
+                    'type': 'patch_pocket_surface_stitch',
+                })
+
+            back_panel.surface_stitches = surface_stitches
+            self.subs.append(self.back_pocket)
 
         # ---- 前后片的缝合关系 ----
         # PantsHalf不缝合任何东西，所有缝合留给Pants类处理
@@ -463,139 +551,6 @@ class PantsHalf(BaseBottoms):
     def get_interfaces(self):
         return self._interfaces
 
-    def _create_pocket(self):
-        """创建后贴袋"""
-        from assets.garment_programs.pockets import PatchPocket
-        
-        config = self._pocket_config
-        tag = self._pocket_tag
-        
-        pocket_width = config.get('pocket_width', {}).get('v', 11)
-        pocket_depth = config.get('pocket_depth', {}).get('v', 11)
-        pocket_type = config.get('pocket_type', {}).get('v', 'rectangular')
-
-        # 验证口袋尺寸
-        if pocket_width <= 0 or pocket_depth <= 0:
-            print(f"WARNING: Invalid pocket dimensions: width={pocket_width}, depth={pocket_depth}")
-            self.back_pocket = None
-            return
-        
-        self.back_pocket = PatchPocket(
-            f'back_pocket_{tag}',
-            width=pocket_width,
-            depth=pocket_depth,
-            pocket_type=pocket_type,
-        )
-        
-        self._compute_pocket_position()
-        self.subs.append(self.back_pocket)
-    
-    def _compute_pocket_position(self):
-        """计算口袋位置 - 按照sematic_editor/core.py的_add_patch_pocket方法实现
-        
-        口袋edges保持pocket-local坐标（PatchPocket创建时的原始坐标），
-        translation = back_trans + normal_offset + [pocket_x - width/2, pocket_y - height/2]。
-        目标segment通过3D投影计算，位于target panel的当前local 2D空间中，
-        使用coordinate_space: "target_panel_2d"让boxmeshgen在mesh生成时减去_orig_pivot转换。
-        """
-        if self.back_pocket is None:
-            return
-
-        config = self._pocket_config
-        tag = self._pocket_tag
-        pocket_width = config.get('pocket_width', {}).get('v', 11)
-        pocket_depth = config.get('pocket_depth', {}).get('v', 11)
-
-        back_panel = self.back
-        pocket_panel = self.back_pocket.panel
-
-        vertices = back_panel.edges.verts()
-        x_min = min(v[0] for v in vertices)
-        x_max = max(v[0] for v in vertices)
-        y_min = min(v[1] for v in vertices)
-        y_max = max(v[1] for v in vertices)
-
-        distance_from_waist = config.get('distance_from_waist', {}).get('v', 5)
-        distance_from_center_back = config.get('distance_from_center_back', {}).get('v', 8)
-
-        if tag == 'r':
-            pocket_x = x_min + distance_from_center_back + pocket_width / 2.0
-        else:
-            pocket_x = x_max - distance_from_center_back - pocket_width / 2.0
-        pocket_y = y_max - distance_from_waist - pocket_depth / 2.0
-
-        pocket_x = max(x_min + pocket_width / 2.0 + 0.5, min(x_max - pocket_width / 2.0 - 0.5, pocket_x))
-        pocket_y = max(y_min + pocket_depth / 2.0 + 0.5, min(y_max - pocket_depth / 2.0 - 0.5, pocket_y))
-
-        pocket_panel.rotation = back_panel.rotation
-
-        back_trans = np.asarray(back_panel.translation, dtype=float).flatten()
-        R = back_panel.rotation.as_matrix()
-
-        target_normal = R @ np.array([0.0, 0.0, 1.0])
-        if np.dot(target_normal, back_trans) < 0:
-            target_normal = -target_normal
-
-        surface_offset_cm = 1.5
-        pocket_translation = (back_trans + target_normal * surface_offset_cm).tolist()
-        pocket_translation[0] += pocket_x - pocket_width / 2.0
-        pocket_translation[1] += pocket_y - pocket_depth / 2.0
-        pocket_panel.translate_to(pocket_translation)
-
-        back_panel_name = back_panel.name
-        pocket_panel_name = pocket_panel.name
-
-        surface_stitches = []
-
-        sewn_edge_ids = [0, 1, 3]
-
-        pocket_rotation = back_panel.rotation.as_euler('XYZ', degrees=True)
-        target_rotation = back_panel.rotation.as_euler('XYZ', degrees=True)
-
-        for edge_id in sewn_edge_ids:
-            edge = pocket_panel.edges[edge_id]
-            start_local = [edge.start[0], edge.start[1]]
-            end_local = [edge.end[0], edge.end[1]]
-            def pocket_point_to_target_2d(point_2d):
-                point_3d = np.array([point_2d[0], point_2d[1], 0.0])
-                R_pocket = np.asarray(rotation_tools.euler_xyz_to_R(
-                    np.asarray(pocket_rotation, dtype=float)
-                ))
-                R_target = np.asarray(rotation_tools.euler_xyz_to_R(
-                    np.asarray(target_rotation, dtype=float)
-                ))
-                world_point = (
-                    R_pocket @ point_3d
-                    + np.asarray(pocket_translation, dtype=float)
-                )
-                target_local = R_target.T @ (
-                    world_point - np.asarray(back_trans, dtype=float)
-                )
-                return target_local[:2].tolist()
-
-            start = pocket_point_to_target_2d(start_local)
-            end = pocket_point_to_target_2d(end_local)
-
-            surface_stitches.append({
-                'source': {'panel': pocket_panel_name, 'edge': edge_id},
-                'target': {
-                    'panel': back_panel_name,
-                    'segment': [
-                        [float(start[0]), float(start[1])],
-                        [float(end[0]), float(end[1])],
-                    ],
-                    'coordinate_space': 'target_panel_2d',
-                },
-                'type': 'patch_pocket_surface_stitch',
-            })
-
-        self.surface_stitches = surface_stitches
-
-    def update_pocket_position(self):
-        """在 mirror 之后重新计算口袋位置"""
-        if self.back_pocket is not None:
-            self._compute_pocket_position()
-
 
 class Pants(BaseBottoms):
     """完整裤子类（包含左右裤片）"""
@@ -603,10 +558,7 @@ class Pants(BaseBottoms):
         super().__init__(body, design, rise=rise)
         
         self.right = PantsHalf(body, design, tag='r', rise=rise, create_front_placket=False)
-        left_half = PantsHalf(body, design, tag='l', rise=rise, create_front_placket=False)
-        left_half.mirror()
-        left_half.update_pocket_position()
-        self.left = left_half
+        self.left = PantsHalf(body, design, tag='l', rise=rise, create_front_placket=False).mirror()
 
         # ---- 门襟（仅左侧前片） ----
         self.front_placket = None
@@ -629,9 +581,9 @@ class Pants(BaseBottoms):
             self.front_placket.translate_by([0, -distance_from_waist, 0])
             self.front_placket.translate_by([0, 0, 0.1])
             self.subs.append(self.front_placket)
-            # self.left.stitching_rules.append(
-            #     (self.front_placket.interfaces['attach'], self.left.front.interfaces['placket_attach'])
-            # ) # jingma
+            self.left.stitching_rules.append(
+                (self.front_placket.interfaces['attach'], self.left.front.interfaces['placket_attach'])
+            )
 
         # ---- 左右裤片的缝合关系 ----
         # PantsHalf不缝合任何东西，Pants负责所有缝合

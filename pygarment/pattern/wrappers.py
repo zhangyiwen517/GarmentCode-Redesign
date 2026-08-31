@@ -200,7 +200,7 @@ class VisPattern(core.ParametrizedPattern):
         # Order by depth (=> most front panels render in front)
         # TODOLOW Even smarter way is needed for prettier allignment
         panel_order = self.panel_order()
-        panel_z = [self.pattern['panels'][pn]['translation'][-1] for pn in panel_order]
+        panel_z = [float(self.pattern['panels'][pn]['translation'][-1]) for pn in panel_order]
         z_sorted_panels = [p for _, p in sorted(zip(panel_z, panel_order))]
 
         # Get panel paths
